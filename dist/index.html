@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trash Sorter 3D with GLTF Models</title>
+  <style>
+    /* รีเซ็ตค่าพื้นฐาน */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+  
+    body {
+      margin: 0;
+      overflow: hidden;
+      touch-action: none; /* ป้องกันการเลื่อนหน้าจอ */
+      background-color: black;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100vw;
+      height: 100vh;
+    }
+  
+    /* ปรับ Canvas ให้เต็มจอและรักษาสัดส่วน */
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      max-width: 100vw;
+      max-height: 100vh;
+      object-fit: contain; /* ทำให้ขนาดเกมปรับอัตโนมัติ */
+    }
+  
+    /* UI ของเกม */
+    #ui {
+      position: absolute;
+      top: 2vh;
+      left: 2vw;
+      color: white;
+      font-family: Arial, sans-serif;
+      font-size: 1.5rem;
+      background: rgba(0, 0, 0, 0.6);
+      padding: 1rem;
+      border-radius: 10px;
+      max-width: 90vw;
+      z-index: 10;
+    }
+  
+    /* ปรับ UI ให้เหมาะกับ iPad และแท็บเล็ต (ขยายเฉพาะในอุปกรณ์ที่มีหน้าจอใหญ่ขึ้น) */
+    @media (min-width: 768px) {
+      #ui {
+        font-size: 2rem;
+        padding: 2rem;
+      }
+      
+      /* เพิ่มการขยายของ Canvas ให้เต็มหน้าจอใน iPad หรืออุปกรณ์ที่มีหน้าจอใหญ่ */
+      canvas {
+        object-fit: cover;  /* เต็มจอมากขึ้น */
+      }
+    }
+  
+    /* บังคับให้เล่นแนวนอน */
+    @media (orientation: portrait) {
+      body::before {
+        content: "กรุณาหมุนจอเป็นแนวนอนเพื่อเล่นเกม!";
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 1.5rem;
+        font-size: 1.5rem;
+        text-align: center;
+        width: 80%;
+        border-radius: 10px;
+        z-index: 100;
+      }
+  
+      canvas {
+        display: none; /* ซ่อนเกมจนกว่าจะหมุนจอ */
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div>Score: <span id="score">0</span></div>
+    <div id="feedback"></div>
+  </div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { DragControls } from 'three/examples/jsm/controls/DragControls.js';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const light = new THREE.AmbientLight(0xffffff, 1);
+    scene.add(light);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    directionalLight.position.set(10, 10, 10);
+    scene.add(directionalLight);
+
+    const conveyorTexture = new THREE.TextureLoader().load('/models/Conveyor_Belt.jpg');
+    conveyorTexture.wrapS = THREE.RepeatWrapping;
+    conveyorTexture.wrapT = THREE.RepeatWrapping;
+    conveyorTexture.repeat.set(10, 1);
+
+    const conveyorGeometry = new THREE.BoxGeometry(10, 0.1, 2);
+    const conveyorMaterial = new THREE.MeshStandardMaterial({ map: conveyorTexture });
+    const conveyor = new THREE.Mesh(conveyorGeometry, conveyorMaterial);
+    conveyor.position.set(0, -1, 0);
+    scene.add(conveyor);
+
+    let draggableObjects = [];
+    const bins = {};
+    let score = 0;
+
+    const scoreElement = document.getElementById('score');
+    const feedbackElement = document.getElementById('feedback');
+
+    function updateScore(points, message, color) {
+      score += points;
+      scoreElement.textContent = score;
+      feedbackElement.textContent = message;
+      feedbackElement.style.color = color;
+      setTimeout(() => {
+        feedbackElement.textContent = '';
+      }, 2000);
+    }
+
+    const canvas = document.querySelector("canvas");
+    const ctx = canvas.getContext("2d");
+
+    // ปรับขนาด Canvas ให้ขยายเต็มจอ
+    function resizeCanvas() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      // ทำให้ Canvas ขยายเต็มหน้าจอโดยไม่ลดขนาด
+      canvas.width = width;
+      canvas.height = height;
+      ctx.fillStyle = "black";
+      ctx.fillRect(0, 0, canvas.width, canvas.height); // เติมพื้นหลัง
+    }
+
+    // ตรวจสอบแนวตั้งและแจ้งเตือนให้หมุนจอ
+    function checkOrientation() {
+      if (window.innerHeight > window.innerWidth) {
+        alert("กรุณาหมุนจอเป็นแนวนอนเพื่อเล่นเกม!");
+      }
+    }
+
+    // ปรับขนาด Canvas และตรวจสอบแนวตั้งเมื่อโหลดหน้า
+    window.addEventListener("resize", () => {
+      resizeCanvas();
+      checkOrientation();
+    });
+
+    window.addEventListener("load", () => {
+      resizeCanvas();
+      checkOrientation();
+    });
+
+
+    const loader = new GLTFLoader();
+    const binTypes = [
+      { name: 'Hazard', path: 'models/Hazard_Bin.glb', position: -6 },
+      { name: 'Organic', path: 'models/Organic_Bin.glb', position: -2 },
+      { name: 'General', path: 'models/General_Bin.glb', position: 2 },
+      { name: 'Recycle', path: 'models/Recycle_Bin.glb', position: 6 }
+    ];
+
+    binTypes.forEach((binType) => {
+      loader.load(
+        binType.path,
+        (gltf) => {
+          const bin = gltf.scene;
+          bin.scale.set(1, 1, 1);
+          bin.position.set(binType.position, -5, 0);
+          bin.rotation.y = Math.PI / -2;
+          bins[binType.name] = bin;
+          scene.add(bin);
+        },
+        undefined,
+        (error) => {
+          console.error('An error occurred while loading the GLTF model:', error);
+        }
+      );
+    });
+
+    const itemModels = [
+      { name: 'Hazard', path: 'models/mask.glb', correctBin: 'Hazard' },
+      { name: 'Organic', path: 'models/nonRecyclable1.glb', correctBin: 'Organic' },
+      { name: 'General', path: 'models/nonRecyclable6.glb', correctBin: 'General' },
+      { name: 'Recycle', path: 'models/recyclable2.glb', correctBin: 'Recycle' }
+    ];
+
+    function createItem() {
+      const randomType = itemModels[Math.floor(Math.random() * itemModels.length)];
+      loader.load(
+        randomType.path,
+        (gltf) => {
+          const item = gltf.scene;
+          item.scale.set(0.3, 0.3, 0.3);
+          item.position.set(5, 0, 0);
+
+          item.traverse((child) => {
+            if (child.isMesh) {
+              child.userData = { type: randomType.name, correctBin: randomType.correctBin };
+            }
+          });
+
+          draggableObjects.push(item);
+          dragControls.objects = draggableObjects; // ✅ Update draggable objects dynamically
+          scene.add(item);
+        },
+        undefined,
+        (error) => {
+          console.error('Error loading model:', error);
+        }
+      );
+    }
+
+    const dragControls = new DragControls(draggableObjects, camera, renderer.domElement);
+
+    dragControls.addEventListener('dragstart', (event) => {
+      event.object.traverse((child) => {
+        if (child.isMesh) {
+          child.material.emissive.set(0xaaaaaa);
+        }
+      });
+    });
+
+    dragControls.addEventListener('dragend', (event) => {
+      const object = event.object;
+      const correctBinName = object.userData.correctBin;
+      const correctBin = bins[correctBinName];
+
+      if (!correctBin) return;
+
+      // สร้าง Hitbox สำหรับไอเท็มและถังขยะ
+      const itemBox = new THREE.Box3().setFromObject(object);
+      const binBox = new THREE.Box3().setFromObject(correctBin);
+
+      // ตรวจสอบการชนกันระหว่าง item กับ bin
+      if (itemBox.intersectsBox(binBox)) {
+        updateScore(10, `✅ Correct! ${object.userData.type} sorted into ${correctBinName}!`, 'green');
+
+        // ลบ object ออกจาก scene และเคลียร์ทรัพยากร
+        scene.remove(object);
+        object.traverse((child) => {
+          if (child.isMesh) {
+            child.geometry.dispose();
+            child.material.dispose();
+          }
+        });
+
+        draggableObjects = draggableObjects.filter(obj => obj !== object);
+        dragControls.objects = draggableObjects;
+      } else {
+        updateScore(-5, `❌ Wrong bin for ${object.userData.type}!`, 'red');
+      }
+    });
+
+    setInterval(createItem, 2500);
+
+    // กำหนดตำแหน่งกำแพงด้านซ้ายสำหรับแต่ละ bintype
+    const walls = [];
+    const wallGeometry = new THREE.BoxGeometry(0.1, 3, 2);
+    const wallMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, visible: false });
+
+    binTypes.forEach((binType) => {
+      const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+      wall.position.set(binType.position - 1, -5, 0); // ติดกับด้านซ้ายของแต่ละ bintype
+      scene.add(wall);
+      walls.push(wall);
+    });
+
+    function checkWallCollision(item) {
+      const itemBox = new THREE.Box3().setFromObject(item);
+
+      for (const wall of walls) {
+        const wallBox = new THREE.Box3().setFromObject(wall);
+        if (itemBox.intersectsBox(wallBox)) {
+          removeItem(item); // ลบไอเท็มที่ชนกำแพง
+          return;
+        }
+      }
+    }
+
+    function removeItem(item) {
+      scene.remove(item);
+      item.traverse((child) => {
+        if (child.isMesh) {
+          child.geometry.dispose();
+          child.material.dispose();
+        }
+      });
+      draggableObjects = draggableObjects.filter(obj => obj !== item);
+      dragControls.objects = draggableObjects;
+    }
+
+    camera.position.z = 10;
+
+    scene.fog = new THREE.FogExp2(0xe0f7fa, 0.015, 150);
+
+    const geometry = new THREE.BufferGeometry();
+    const vertices = [];
+    const size = 10000;
+
+    // Define soft white color for realistic small snow particles
+    const snowColor = new THREE.Color(0xffffff);
+
+    for (let i = 0; i < 8000; i++) {
+      const x = Math.random() * size - size / 2;
+      const y = Math.random() * size - size / 4;
+      const z = Math.random() * size - size / 2;
+
+      vertices.push(x, y, z);
+    }
+
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(vertices, 3)
+    );
+
+    const material = new THREE.PointsMaterial({
+      size: 1.5,
+      color: snowColor,
+      transparent: true,
+      opacity: 0.85
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+
+    
+
+    // Animation Loop with gentle snowfall effect
+    function animate() {
+      requestAnimationFrame(animate);
+
+      // Update snow particle positions for smooth falling effect
+      const positions = geometry.attributes.position.array;
+      for (let i = 1; i < positions.length; i += 3) {
+        positions[i] -= 0.2 * Math.random();
+        if (positions[i] < -size / 4) {
+          positions[i] = size / 4;
+        }
+      }
+      geometry.attributes.position.needsUpdate = true;
+
+      particles.rotation.y += 0.0001;
+
+
+
+      conveyorTexture.offset.x += 0.02;
+
+      draggableObjects.forEach((item) => {
+        item.position.x -= 0.02;
+
+        // ตรวจสอบว่าชนกำแพงหรือยัง
+        checkWallCollision(item);
+
+        if (item.position.x < -10) {
+          scene.remove(item);
+          draggableObjects = draggableObjects.filter(obj => obj !== item);
+          dragControls.objects = draggableObjects;
+          updateScore(-5, `Missed item: ${item.userData.type}`, 'red');
+        }
+      });
+
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
